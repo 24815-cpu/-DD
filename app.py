@@ -1,151 +1,79 @@
 from flask import Flask, request, jsonify
-import random
 import requests
 from bs4 import BeautifulSoup
-import urllib.parse
+import google.generativeai as genai
 import os
-from google import genai
 
 app = Flask(__name__)
 
+# 1. Gemini API 설정 (Render 환경 변수에서 가져옴)
+# 주의: 코드 내에 API 키를 직접 노출하지 말고, Render의 Environment Variables에 GEMINI_API_KEY를 등록하세요.
+GOOGLE_API_KEY = os.environ.get('GEMINI_API_KEY')
+genai.configure(api_key=GOOGLE_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
 
-def kakao_text(text):
-    return {
+# 2. 크롤링 함수 (예시: 위키백과 화학물질 검색)
+def crawl_chemical_info(keyword):
+    try:
+        url = f"https://ko.wikipedia.org/wiki/{keyword}"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            # 위키백과 본문의 첫 번째 문단 추출
+            paragraphs = soup.select('#mw-content-text > div.mw-parser-output > p:not(.mw-empty-elt)')
+            if paragraphs:
+                return paragraphs[0].text.strip()
+        return "해당 물질에 대한 크롤링된 기본 정보가 없습니다."
+    except Exception as e:
+        return f"크롤링 오류 발생: {str(e)}"
+
+# 3. Gemini 프롬프트 생성 및 응답 요청 함수
+def get_gemini_response(user_keyword, crawled_data):
+    # 하단에 명시된 '행동강령'을 시스템 프롬프트로 주입합니다.
+    system_prompt = f"""
+    당신은 카카오톡에서 활동하는 '전문 화학 지식 안내 챗봇'입니다.
+    사용자가 질문한 화학물질: {user_keyword}
+    웹에서 수집한 기초 정보: {crawled_data}
+    
+    위 정보를 바탕으로 해당 화학물질의 1) 정의 및 특징, 2) 화학적 원리, 3) 실생활 활용 사례를 카카오톡에서 읽기 편하게 불릿 포인트로 요약해 주세요.
+    (주의: 폭발물, 마약류, 독성 화학무기 등 위험 물질의 '제조법'이나 '합성 비율'은 절대 알려주지 말고, 오직 학술적/안전 정보만 제공하세요.)
+    """
+    
+    try:
+        response = model.generate_content(system_prompt)
+        return response.text
+    except Exception as e:
+        return "AI 응답을 생성하는 중 문제가 발생했습니다. 잠시 후 다시 시도해주세요."
+
+# 4. 카카오톡 스킬 서버 엔드포인트
+@app.route('/chemical_chat', methods=['POST'])
+def chemical_chat():
+    # 카카오톡 서버로부터 전달받은 JSON 데이터
+    req = request.get_json()
+    
+    # 사용자의 입력 텍스트 추출 (예: "황산", "아세톤의 원리 알려줘" 등)
+    user_utterance = req.get('userRequest', {}).get('utterance', '').strip()
+    
+    # 크롤링 및 Gemini 답변 생성
+    crawled_info = crawl_chemical_info(user_utterance)
+    final_answer = get_gemini_response(user_utterance, crawled_info)
+    
+    # 카카오톡 응답 포맷 (SimpleText 형식)
+    res = {
         "version": "2.0",
         "template": {
-            "outputs": [{
-                "simpleText": {
-                    "text": text[:1000]
+            "outputs": [
+                {
+                    "simpleText": {
+                        "text": final_answer
+                    }
                 }
-            }]
+            ]
         }
     }
+    return jsonify(res)
 
-
-@app.route("/", methods=["GET"])
-def home():
-    return "Server is running."
-
-
-# 기존 테스트용
-@app.route("/text", methods=["GET", "POST"])
-def text_skill():
-    return jsonify(kakao_text(str(random.randint(1, 10))))
-
-
-@app.route("/image", methods=["GET", "POST"])
-def image_skill():
-    response = {
-        "version": "2.0",
-        "template": {
-            "outputs": [{
-                "simpleImage": {
-                    "imageUrl": "https://t1.daumcdn.net/friends/prod/category/M001_friends_ryan2.jpg",
-                    "altText": "hello I'm Ryan"
-                }
-            }]
-        }
-    }
-    return jsonify(response)
-
-
-# 1. 데이터 그대로 주고받기
-@app.route("/echo", methods=["POST"])
-def echo_skill():
-    data = request.get_json(silent=True) or {}
-    user_input = data.get("userRequest", {}).get("utterance", "입력값이 없습니다.")
-    return jsonify(kakao_text(user_input))
-
-
-# 2. 울산 날씨 크롤링은 이전에 추가했던 버전 유지 가능
-# 여기서는 생략
-
-
-# 3. 시간/발화/파라미터 확인
-@app.route("/params-check", methods=["POST"])
-def params_check():
-    data = request.get_json(silent=True) or {}
-
-    user_request = data.get("userRequest", {})
-    action = data.get("action", {})
-    params = action.get("params", {})
-
-    a = user_request.get("timezone", "timezone 없음")
-    b = user_request.get("utterance", "utterance 없음")
-    c = params.get("파라미터", "파라미터 없음")
-    d = params.get("파라미터2", "파라미터2 없음")
-
-    text = f"{a} / {b} / {c} / {d}"
-    return jsonify(kakao_text(text))
-
-
-# 4. 파라미터 활용 구글 기사 데이터 가져오기
-@app.route("/google-news", methods=["POST"])
-def google_news():
-    data = request.get_json(silent=True) or {}
-    y = data.get("action", {}).get("params", {}).get("파라미터", "").strip()
-
-    if not y:
-        return jsonify(kakao_text("파라미터 값이 없습니다."))
-
-    query = urllib.parse.quote(y)
-    url = f"https://www.google.com/search?q={query}&tbm=nws"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # Google 뉴스 검색 결과에서 자주 보이는 제목 선택자들 시도
-        items = soup.select(".n0jPhd") or soup.select(".mCBkyc") or soup.select(".DKV0Md")
-
-        titles = []
-        for item in items[:5]:
-            title = item.get_text(strip=True)
-            if title:
-                titles.append(title)
-
-        if titles:
-            result = y + " 검색 결과:\n" + "\n".join([f"{i+1}. {t}" for i, t in enumerate(titles)])
-        else:
-            result = f"{y} 검색 결과를 찾지 못했습니다."
-
-    except Exception as e:
-        result = f"구글 뉴스 조회 중 오류: {str(e)}"
-
-    return jsonify(kakao_text(result))
-
-
-# 5. 파라미터로 Gemini 연동하기
-@app.route("/gemini-param", methods=["POST"])
-def gemini_param():
-    data = request.get_json(silent=True) or {}
-    tt = data.get("action", {}).get("params", {}).get("파라미터", "").strip()
-
-    if not tt:
-        return jsonify(kakao_text("파라미터 값이 없습니다."))
-
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return jsonify(kakao_text("GEMINI_API_KEY 환경변수가 설정되지 않았습니다."))
-
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=tt
-        )
-        result_text = response.text if response.text else "응답이 비어 있습니다."
-    except Exception as e:
-        result_text = f"Gemini 호출 중 오류: {str(e)}"
-
-    return jsonify(kakao_text(result_text))
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
-   
-
+if __name__ == '__main__':
+    # 로컬 테스트용. Render 배포 시에는 gunicorn이 app을 실행합니다.
+    app.run(host='0.0.0.0', port=5000, debug=True)
