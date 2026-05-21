@@ -9,7 +9,6 @@ app = Flask(__name__)
 # 1. Gemini API 설정 (렌더 환경변수에서 로드)
 GOOGLE_API_KEY = os.environ.get('GEMINI_API_KEY')
 genai.configure(api_key=GOOGLE_API_KEY)
-
 # 5초 제한이 있는 카카오톡에 가장 적합한 초고속 대용량 모델 'gemini-1.5-flash' 사용
 model = genai.GenerativeModel('gemini-1.5-flash')
 
