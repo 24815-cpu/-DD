@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from openai import OpenAI
 import os
 
+
 app = Flask(__name__)
 
 # 1. OpenAI API 키 설정 (알려주신 키 적용)
