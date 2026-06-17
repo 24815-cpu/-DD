@@ -1,17 +1,16 @@
 from flask import Flask, request, jsonify
 import requests
 from bs4 import BeautifulSoup
-import google.generativeai as genai
+from openai import OpenAI
 import os
 
 app = Flask(__name__)
 
-# 1. Gemini API 설정
-GOOGLE_API_KEY = os.environ.get('GEMINI_API_KEY')
-genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# 1. OpenAI API 키 설정 (알려주신 키 적용)
+OPENAI_API_KEY = "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"
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-# 2. 크롤링 함수 (위키백과)
+# 2. 크롤링 함수 (위키백과 - 동일하게 유지)
 def crawl_chemical_info(keyword):
     if not keyword:
         return "키워드가 없습니다."
@@ -19,69 +18,60 @@ def crawl_chemical_info(keyword):
         url = f"https://ko.wikipedia.org/wiki/{keyword}"
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=1.5)
+        
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             paragraphs = soup.select('#mw-content-text > div.mw-parser-output > p:not(.mw-empty-elt)')
             if paragraphs:
                 return paragraphs[0].text.strip()
-        return "웹에서 기본 정보를 찾을 수 없습니다."
-    except:
-        return "크롤링을 생략하고 AI 지식으로 답변합니다."
+        return "웹 크롤링을 통한 기본 정보를 찾을 수 없습니다."
+    except Exception as e:
+        return "크롤링 타임아웃. AI의 자체 지식으로 답변을 생성합니다."
 
-# 3. 챗봇 행동강령 주입 및 Gemini 응답
-def get_gemini_response(chemical_name, crawled_data):
-    system_prompt = f"""
-    당신은 카카오톡 화학 전문 챗봇입니다.
-    사용자가 질문한 화학물질: {chemical_name}
-    참고 수집 데이터: {crawled_data}
-    
-    [행동강령 (Code of Conduct) - 엄격 준수]
-    1. 구성: 1) 정의 및 특성 2) 실생활/산업 활용 사례 3) 취급 시 주의사항(응급처치) 순으로 작성.
-    2. 형식: 가독성을 위해 불릿포인트(-, *) 사용, 각 항목은 3줄 이내로 간결하게 작성.
-    3. 금지사항: 폭발물, 마약류, 독극물 등의 '제조법, 배합 비율, 추출 과정'은 절대 제공 불가.
-    4. 대처: 위험 물질 제조 문의 시 "안전 및 법적 문제로 해당 정보는 제공하지 않으며, 학술적 정보만 제공합니다"라고 단호히 거절.
-    5. 말투: 전문가답고 정중한 카카오톡 챗봇 말투("~입니다", "~합니다") 사용.
-    
-    위 규칙에 따라 {chemical_name}에 대해 설명해 주세요.
+# 3. 행동강령이 포함된 OpenAI 응답 생성
+def get_openai_response(chemical_name, crawled_data):
+    # ChatGPT에게 챗봇의 정체성과 행동강령을 부여하는 '시스템 프롬프트'
+    system_prompt = """
+    당신은 카카오톡에서 활동하는 '전문 화학 지식 안내 챗봇'입니다.
+
+    [⚠️ 챗봇 절대 행동강령 - Code of Conduct]
+    1. 답변 구성: 1) 물질의 정의 및 특징, 2) 주요 화학적 원리(비유 포함), 3) 실생활 활용 사례 및 안전 주의사항 순으로 작성하세요.
+    2. 불법/위험물 차단: 폭발물(TNT 등), 마약류(필로폰 등), 독성 화학무기 등의 '제조법', '배합 비율', '합성 과정'은 절대 제공하지 마십시오. 요구받을 경우 "안전 및 관련 법령에 따라 해당 정보는 제공하지 않습니다."라고 단호히 거절하세요.
+    3. 가독성: 카카오톡 모바일 환경에 맞게 글머리 기호(-, *)를 사용하고 문단을 짧게 끊어주세요.
+    4. 응급 상황 대처: 피부 접촉, 흡입 등 사고 관련 질문 시 즉시 119 신고 및 흐르는 물 세척 등 응급처치 가이드를 최우선으로 출력하세요.
     """
+    
+    # 실제 사용자 질문과 크롤링 데이터를 넘겨주는 '유저 프롬프트'
+    user_prompt = f"사용자가 질문한 화학물질: {chemical_name}\n웹(위키백과) 수집 데이터: {crawled_data}\n\n위 정보와 행동강령을 바탕으로 {chemical_name}에 대해 300자 이내로 요약 설명해 주세요."
+    
     try:
-        response = model.generate_content(system_prompt)
-        return response.text
-    except:
-        return "AI 응답 생성 중 오류가 발생했습니다."
+        # 카카오톡 5초 룰을 방어하기 위해 빠르고 가벼운 gpt-3.5-turbo 모델 사용
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo", 
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=400, # 답변 길이 제한
+            temperature=0.7 # 약간의 유연성을 줌
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"AI 응답 생성 중 오류가 발생했습니다: {str(e)[:50]}"
 
-# --- [라우트 1] 봇 리스트 메뉴 (웰컴 블록용) ---
+# --- [라우트 1] 메뉴 리스트 (동일) ---
 @app.route('/menu_list', methods=['POST'])
 def menu_list():
-    # 카카오톡 ListCard 형식 반환
     return jsonify({
         "version": "2.0",
         "template": {
             "outputs": [
                 {
                     "listCard": {
-                        "header": {
-                            "title": "🧪 화학 지식 AI 챗봇"
-                        },
+                        "header": {"title": "🧪 화학 지식 AI 챗봇"},
                         "items": [
-                            {
-                                "title": "🔍 화학물질 검색",
-                                "description": "원하는 화학물질의 특성을 검색해보세요.",
-                                "action": "message",
-                                "messageText": "화학물질 검색할래"
-                            },
-                            {
-                                "title": "🚑 응급 처치 가이드",
-                                "description": "화학물질 노출 시 대처 방법",
-                                "action": "message",
-                                "messageText": "응급처치 안내해줘"
-                            },
-                            {
-                                "title": "📖 화학 원리 설명",
-                                "description": "일상 속 화학 법칙 알아보기",
-                                "action": "message",
-                                "messageText": "화학 원리 알려줘"
-                            }
+                            {"title": "🔍 화학물질 검색", "description": "원하는 화학물질 특성 검색", "action": "message", "messageText": "화학물질 검색할래"},
+                            {"title": "🚑 응급 처치 가이드", "description": "화학물질 노출 시 대처법", "action": "message", "messageText": "응급처치 안내해줘"}
                         ]
                     }
                 }
@@ -89,33 +79,30 @@ def menu_list():
         }
     })
 
-# --- [라우트 2] 파라미터 기반 화학물질 검색 스킬 ---
+# --- [라우트 2] 화학물질 검색 스킬 (OpenAI 적용) ---
 @app.route('/chemical_search', methods=['POST'])
 def chemical_search():
-    req = request.get_json()
-    
-    # 오픈빌더 파라미터 추출 (엔티티를 통해 추출된 값)
-    # action > params > chemical_name 에 매핑되도록 오픈빌더에서 설정해야 함
-    params = req.get('action', {}).get('params', {})
-    chemical_name = params.get('chemical_name', '')
-    
-    # 파라미터가 비어있다면, 전체 발화를 키워드로 사용(폴백 대비)
-    if not chemical_name:
-        chemical_name = req.get('userRequest', {}).get('utterance', '').strip()
+    try:
+        req = request.get_json()
+        
+        # 파라미터 추출
+        params = req.get('action', {}).get('params', {})
+        chemical_name = params.get('chemical_name', '')
+        
+        if not chemical_name:
+            chemical_name = req.get('userRequest', {}).get('utterance', '').strip()
 
-    crawled_info = crawl_chemical_info(chemical_name)
-    final_answer = get_gemini_response(chemical_name, crawled_info)
-    
+        # 크롤링 + OpenAI 호출
+        crawled_info = crawl_chemical_info(chemical_name)
+        final_answer = get_openai_response(chemical_name, crawled_info)
+        
+    except Exception as e:
+        final_answer = "서버 처리 중 에러가 발생했습니다."
+
     return jsonify({
         "version": "2.0",
         "template": {
-            "outputs": [
-                {
-                    "simpleText": {
-                        "text": final_answer
-                    }
-                }
-            ]
+            "outputs": [{"simpleText": {"text": final_answer}}]
         }
     })
 
