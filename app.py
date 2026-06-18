@@ -6,6 +6,8 @@ import os
 
 app = Flask(__name__)
 
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+
 # 1. 새로 발급받은 OpenAI API 키 적용 (새 키로 교체 완료)
 OPENAI_API_KEY = "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"
 client = OpenAI(api_key=OPENAI_API_KEY)
